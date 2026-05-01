@@ -54,6 +54,10 @@ wifi_setup.py    — WiFi connect/AP setup, HTTP web server (:80)
 terminal.html    — Web serial console (xterm.js)
 status.html      — Status page
 config.html      — WiFi config page
+
+tools/
+  flash_debug.py     — Lightweight standalone proxy, import from REPL
+  FLASH_DEBUG.md     — Documentation for flash_debug.py
 ```
 
 ---
@@ -292,6 +296,24 @@ Used by the web pages. Can also be called directly.
 
 ---
 
+## tools/flash_debug.py
+
+A lightweight standalone proxy that can be imported directly from the
+REPL — no reboot, no file changes needed. Useful for quick testing or
+when you need to isolate a hardware problem from the full bridge stack.
+
+```python
+# In WebREPL or Thonny console (WiFi must already be connected):
+import flash_debug
+```
+
+Provides the same three TCP ports (`:2222` / `:23` / `:2223`) with a
+simpler single-threaded architecture and no ring buffers or watchdog.
+
+See [`tools/FLASH_DEBUG.md`](tools/FLASH_DEBUG.md) for full documentation.
+
+---
+
 ## Configuration
 
 Edit the top of `main.py`:
@@ -332,6 +354,7 @@ AP_PASS = "12345678"      # AP mode password (min 8 chars)
 - Baud must be `-b 115200` (optiboot fixed rate)
 - Check RST wiring — GPIO 26 must connect to AVR RESET
 - Try increasing `utime.sleep_ms` values in `_avr_reset_and_wait()` if bootloader is slow
+- If it works with `tools/flash_debug.py` but not `main.py` — increase the flush delays in `_avr_reset_and_wait()`
 
 ### avrdude "ioctl TIOCMGET" warnings
 - These are **normal** and harmless — avrdude tries DTR/RTS on TCP socket which doesn't support it. Ignore them.
