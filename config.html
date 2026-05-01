@@ -1,0 +1,175 @@
+<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Config · ESP32</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@700;800&display=swap');
+:root{--bg:#080b10;--panel:#0d1117;--border:#1c2333;--b2:#243044;
+--ac:#00d4ff;--ac2:#00ff9d;--warn:#ffb800;--err:#ff4566;
+--txt:#cdd9e5;--mute:#4a5568;--inp:#111827}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:'JetBrains Mono',monospace;font-size:13px}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px)}
+nav{background:var(--panel);padding:10px 16px;display:flex;align-items:center;
+gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
+.logo{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;
+color:var(--ac);letter-spacing:.08em;margin-right:12px}
+.logo span{color:var(--ac2)}
+nav a{color:var(--mute);text-decoration:none;font-size:11px;
+padding:5px 12px;border-radius:4px;transition:all .15s}
+nav a:hover{color:var(--txt);background:var(--border)}
+nav a.on{color:var(--ac);border-bottom:2px solid var(--ac)}
+.pg{padding:16px;max-width:720px;margin:0 auto}
+h3{font-size:10px;color:var(--mute);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px}
+label{font-size:11px;color:var(--mute);display:block;margin-bottom:5px}
+select,input[type=text],input[type=password],input[type=number]{
+width:100%;padding:9px 11px;border:1px solid var(--b2);border-radius:6px;
+font-size:12px;margin-bottom:10px;background:var(--inp);color:var(--txt);
+outline:none;font-family:'JetBrains Mono',monospace;transition:border-color .15s}
+select:focus,input:focus{border-color:var(--ac)}
+.btn{display:inline-block;padding:9px 16px;border:1px solid transparent;
+border-radius:6px;font-size:11px;cursor:pointer;font-weight:700;
+font-family:'JetBrains Mono',monospace;letter-spacing:.05em;
+transition:all .15s;margin:3px;background:transparent}
+.blue{color:#60a5fa;border-color:rgba(37,99,235,.4)}.blue:hover{background:rgba(37,99,235,.2)}
+.red{color:var(--err);border-color:rgba(220,38,38,.35)}.red:hover{background:rgba(220,38,38,.2)}
+.amb{color:var(--warn);border-color:rgba(217,119,6,.35)}.amb:hover{background:rgba(217,119,6,.2)}
+.gray{color:var(--mute);border-color:var(--b2)}.gray:hover{background:rgba(71,85,105,.2);color:var(--txt)}
+.grn{color:var(--ac2);border-color:rgba(22,163,74,.35)}.grn:hover{background:rgba(22,163,74,.2)}
+.full{width:100%;display:block;padding:10px;margin:4px 0;text-align:center}
+#msg{font-size:12px;padding:6px 0;min-height:20px}
+.mok{color:var(--ac2)}.merr{color:var(--err)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border:none}
+.lbl{color:var(--mute)}.val{color:var(--txt)}
+.ok{color:var(--ac2)}.no{color:var(--mute)}
+</style>
+</head><body>
+<nav>
+  <div class="logo">ESP<span>32</span></div>
+  <a href="/status.html">Status</a>
+  <a href="/config.html" class="on">Config</a>
+  <a href="/terminal.html">Terminal</a>
+</nav>
+<div class="pg">
+<div id="msg"></div>
+
+<div class="card">
+  <h3>Hardware Reset</h3>
+  <button class="btn amb full" onclick="dp('/reset')">&#x27F3; Hardware Reset</button>
+</div>
+
+<div class="card">
+  <h3>Baud Rates</h3>
+  <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px">
+    <div><label>ESP flash</label><input type="number" id="be" value="115200"></div>
+    <div><label>AVR flash</label><input type="number" id="ba" value="115200"></div>
+    <div><label>Debug</label><input type="number" id="bd" value="115200"></div>
+  </div>
+  <button class="btn grn full" onclick="saveBaud()">Save Baud Rates</button>
+</div>
+
+<div class="card">
+  <h3>WiFi</h3>
+  <div id="aprow" style="margin-bottom:10px"></div>
+  <div id="wifistatus" style="font-size:11px;color:var(--mute);margin-bottom:10px"></div>
+
+  <!-- Scan button — no auto-scan on load -->
+  <button class="btn blue full" id="scanbtn" onclick="doScan()">&#x25BA; Scan Networks</button>
+
+  <div id="scanres" style="display:none;margin-top:12px">
+    <label>Network <span id="ss" style="color:var(--mute);font-size:10px"></span></label>
+    <select id="ns"><option value="">-- select --</option></select>
+    <label>Password</label>
+    <input type="password" id="np" placeholder="password">
+    <button class="btn blue full" onclick="doConn()">Connect &amp; Save</button>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Device</h3>
+  <button class="btn red full" onclick="if(confirm('Reboot ESP32?'))dp('/reboot')">Reboot ESP32</button>
+</div>
+</div>
+
+<script>
+function msg(t,ok){
+  var e=document.getElementById('msg');
+  e.textContent=t; e.className=ok?'mok':'merr';
+  if(ok) setTimeout(function(){e.textContent='';},2500);
+}
+function dp(u){
+  fetch(u,{method:'POST'}).then(function(r){return r.json();})
+    .then(function(){msg(u+' OK',true);})
+    .catch(function(){msg(u+' failed',false);});
+}
+function saveBaud(){
+  var b='esp='+document.getElementById('be').value
+       +'&avr='+document.getElementById('ba').value
+       +'&dbg='+document.getElementById('bd').value;
+  fetch('/baud',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},body:b})
+    .then(function(){msg('Baud rates saved',true);})
+    .catch(function(){msg('Save failed',false);});
+}
+
+function doScan(){
+  var btn=document.getElementById('scanbtn');
+  var st=document.getElementById('ss');
+  var sel=document.getElementById('ns');
+  var res=document.getElementById('scanres');
+  btn.textContent='Scanning...'; btn.disabled=true;
+  st.textContent='(scanning...)';
+  fetch('/scan').then(function(r){return r.json();}).then(function(nets){
+    btn.textContent='\u25BA Scan Networks'; btn.disabled=false;
+    sel.innerHTML='';
+    if(!nets||!nets.length){
+      st.textContent='(no networks found)';
+      sel.innerHTML='<option value="">-- none --</option>';
+    } else {
+      nets.forEach(function(n){
+        var o=document.createElement('option');
+        o.value=n.ssid; o.textContent=n.ssid+' ('+n.rssi+' dBm)';
+        sel.appendChild(o);
+      });
+      st.textContent='('+nets.length+' found)';
+    }
+    res.style.display='';
+  }).catch(function(){
+    btn.textContent='\u25BA Scan Networks'; btn.disabled=false;
+    st.textContent='(scan failed)'; res.style.display='';
+  });
+}
+
+function doConn(){
+  var ssid=document.getElementById('ns').value;
+  var pw=document.getElementById('np').value;
+  if(!ssid){msg('Select a network first',false);return;}
+  msg('Connecting to '+ssid+'...',true);
+  fetch('/connect',{method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'ssid='+encodeURIComponent(ssid)+'&pass='+encodeURIComponent(pw)})
+    .then(function(){msg('Command sent — check Status page',true);})
+    .catch(function(){msg('Request failed',false);});
+}
+
+// Load current baud + AP state on page load (no scan)
+fetch('/api/status').then(function(r){return r.json();}).then(function(d){
+  if(d.baud){
+    document.getElementById('be').value=d.baud.esp||115200;
+    document.getElementById('ba').value=d.baud.avr||115200;
+    document.getElementById('bd').value=d.baud.dbg||115200;
+  }
+  var ws=document.getElementById('wifistatus');
+  ws.textContent=d.wifi ? 'Connected: '+d.ssid+' ('+d.ip+')' : 'Not connected';
+  ws.style.color=d.wifi?'var(--ac2)':'var(--mute)';
+
+  var ab=document.getElementById('aprow');
+  ab.innerHTML=d.ap
+    ?'<button class="btn gray full" onclick="dp(\'/stopap\')">Stop AP (192.168.4.1)</button>'
+    :'<button class="btn gray full" onclick="dp(\'/startap\')">Start AP</button>';
+}).catch(function(){});
+</script>
+</body></html>

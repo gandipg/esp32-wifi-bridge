@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Console · ESP32 Bridge</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0f1117;--panel:#161b22;--border:#21262d;--b2:#30363d;
+  --ac:#58a6ff;--ac2:#3fb950;--warn:#d29922;--err:#f85149;
+  --txt:#c9d1d9;--mute:#484f58;--term:#0d1117;
+}
+html,body{height:100%;background:var(--bg);color:var(--txt);
+  font-family:'IBM Plex Sans',sans-serif;font-size:13px;overflow:hidden}
+
+/* TOPBAR */
+.topbar{height:46px;background:var(--panel);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;padding:0 16px;gap:0;flex-shrink:0}
+.brand{font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:13px;
+  color:var(--txt);letter-spacing:.02em;margin-right:20px;white-space:nowrap}
+.brand em{color:var(--ac2);font-style:normal}
+.nav-link{height:46px;display:flex;align-items:center;padding:0 13px;font-size:12px;
+  color:var(--mute);text-decoration:none;border-bottom:2px solid transparent;
+  transition:color .15s,border-color .15s;white-space:nowrap}
+.nav-link:hover{color:var(--txt)}
+.nav-link.active{color:var(--txt);border-bottom-color:var(--ac)}
+.conn-badge{margin-left:auto;display:flex;align-items:center;gap:7px}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--mute);
+  flex-shrink:0;transition:background .3s,box-shadow .3s}
+.dot.ok{background:var(--ac2);box-shadow:0 0 7px var(--ac2)}
+.dot.err{background:var(--err);box-shadow:0 0 7px var(--err)}
+.dot.warn{background:var(--warn)}
+#conn-label{font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--mute);
+  white-space:nowrap;transition:color .3s}
+
+/* LAYOUT */
+.workspace{display:flex;height:calc(100vh - 46px)}
+
+/* SIDEBAR */
+.sidebar{width:214px;flex-shrink:0;display:flex;flex-direction:column;
+  background:var(--panel);border-right:1px solid var(--border);overflow-y:auto}
+.sec{padding:13px 13px 11px;border-bottom:1px solid var(--border)}
+.sec-lbl{font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--mute);margin-bottom:9px}
+.abtn{width:100%;display:flex;align-items:center;gap:8px;padding:7px 10px;
+  border:1px solid var(--border);border-radius:6px;background:transparent;color:var(--txt);
+  font-size:12px;font-family:'IBM Plex Sans',sans-serif;cursor:pointer;
+  transition:background .12s,border-color .12s;margin-bottom:5px;text-align:left}
+.abtn:last-child{margin-bottom:0}
+.abtn:hover{background:var(--b2);border-color:var(--b2)}
+.abtn:disabled{opacity:.35;cursor:not-allowed}
+.abtn .ico{width:14px;text-align:center;flex-shrink:0}
+.abtn.danger{color:var(--err);border-color:rgba(248,81,73,.3)}
+.abtn.danger:hover{background:rgba(248,81,73,.1)}
+.abtn.safe{color:var(--ac2);border-color:rgba(63,185,80,.3)}
+.abtn.safe:hover{background:rgba(63,185,80,.08)}
+/* baud */
+.brow{display:flex;align-items:center;justify-content:space-between;margin-bottom:5px}
+.brow label{font-size:11px;color:var(--mute)}
+.bsel{background:var(--bg);border:1px solid var(--b2);color:var(--txt);
+  font-size:11px;font-family:'IBM Plex Mono',monospace;padding:4px 7px;
+  border-radius:4px;outline:none;cursor:pointer;transition:border-color .15s}
+.bsel:focus,.bsel:hover{border-color:var(--ac)}
+.bmsg{font-size:10px;color:var(--mute);min-height:14px;font-family:'IBM Plex Mono',monospace}
+/* macros */
+.mgrid{display:flex;flex-wrap:wrap;gap:4px}
+.mc{padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:transparent;
+  color:var(--mute);font-size:11px;font-family:'IBM Plex Mono',monospace;cursor:pointer;
+  transition:all .12s}
+.mc:hover{background:var(--b2);color:var(--txt);border-color:var(--b2)}
+/* stats */
+.stats{margin-top:auto;padding:13px;font-family:'IBM Plex Mono',monospace;
+  font-size:10px;color:var(--mute);line-height:2;border-top:1px solid var(--border)}
+.srow{display:flex;justify-content:space-between}
+.sval{color:var(--txt)}
+
+/* TERMINAL PANE */
+.tpane{flex:1;display:flex;flex-direction:column;background:var(--term);min-width:0;overflow:hidden}
+
+/* xterm wrapper — MUST have exact height for fit addon */
+#xt{flex:1;min-height:0;overflow:hidden;cursor:text}
+.xterm,.xterm-viewport,.xterm-screen{height:100%!important}
+.xterm-viewport{background:var(--term)!important}
+/* Make xterm scroll inside, not the page */
+.xterm-viewport{overflow-y:scroll!important}
+
+/* INPUT BAR at bottom */
+.inp-bar{
+  display:flex;align-items:center;
+  background:var(--panel);
+  border-top:1px solid var(--border);
+  flex-shrink:0;
+  height:38px;
+}
+.inp-bar .prompt{
+  padding:0 10px;
+  color:var(--ac2);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:13px;
+  user-select:none;
+  flex-shrink:0;
+}
+#lineinp{
+  flex:1;
+  background:transparent;
+  border:none;
+  outline:none;
+  color:var(--txt);
+  font-family:'IBM Plex Mono',monospace;
+  font-size:13px;
+  padding:0 4px;
+  caret-color:var(--ac);
+}
+#lineinp::placeholder{color:var(--mute);font-size:12px}
+.send-btn{
+  height:100%;
+  padding:0 16px;
+  background:transparent;
+  border:none;
+  border-left:1px solid var(--border);
+  color:var(--ac);
+  font-size:11px;
+  font-weight:600;
+  font-family:'IBM Plex Mono',monospace;
+  cursor:pointer;
+  letter-spacing:.05em;
+  transition:background .12s;
+  flex-shrink:0;
+}
+.send-btn:hover{background:rgba(88,166,255,.1)}
+.asc-lbl{
+  display:flex;align-items:center;gap:5px;font-size:10px;color:var(--mute);
+  cursor:pointer;padding:0 12px;border-left:1px solid var(--border);flex-shrink:0;
+  white-space:nowrap;
+}
+.asc-lbl input{accent-color:var(--ac2)}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">ESP32 <em>Bridge</em></span>
+  <a class="nav-link" href="/status.html">Status</a>
+  <a class="nav-link" href="/config.html">Config</a>
+  <a class="nav-link active" href="/terminal.html">Console</a>
+  <div class="conn-badge">
+    <div class="dot" id="dot"></div>
+    <span id="conn-label">connecting</span>
+  </div>
+</div>
+
+<div class="workspace">
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <div class="sec">
+      <div class="sec-lbl">Control</div>
+      <button class="abtn danger" id="rst-btn" onclick="doReset()">
+        <span class="ico">↺</span> Hardware Reset
+      </button>
+      <button class="abtn safe" onclick="clearTerm()">
+        <span class="ico">✕</span> Clear
+      </button>
+      <button class="abtn" onclick="dlLog()">
+        <span class="ico">↓</span> Download log
+      </button>
+    </div>
+
+    <div class="sec">
+      <div class="sec-lbl">Baud Rate</div>
+      <div class="brow">
+        <label>Debug</label>
+        <select class="bsel" id="baudsel" onchange="setBaud(this.value)">
+          <option value="9600">9600</option>
+          <option value="19200">19200</option>
+          <option value="38400">38400</option>
+          <option value="57600">57600</option>
+          <option value="115200" selected>115200</option>
+          <option value="230400">230400</option>
+          <option value="460800">460800</option>
+          <option value="921600">921600</option>
+        </select>
+      </div>
+      <div class="bmsg" id="bmsg"></div>
+    </div>
+
+    <div class="sec">
+      <div class="sec-lbl">Macros</div>
+      <div class="mgrid">
+        <button class="mc" onclick="sc('\x03')">^C</button>
+        <button class="mc" onclick="sc('\x04')">^D</button>
+        <button class="mc" onclick="sc('\x02')">^B</button>
+        <button class="mc" onclick="sc('\r\n')">CRLF</button>
+        <button class="mc" onclick="sc('help()\r\n')">help()</button>
+        <button class="mc" onclick="sc('import machine;machine.reset()\r\n')">reboot</button>
+        <button class="mc" onclick="sc('import uos;uos.listdir()\r\n')">ls</button>
+        <button class="mc" onclick="sc('\x01')">^A raw</button>
+      </div>
+    </div>
+
+    <div class="stats">
+      <div class="srow"><span>RX</span><span class="sval" id="s-rx">0 B</span></div>
+      <div class="srow"><span>TX</span><span class="sval" id="s-tx">0 B</span></div>
+      <div class="srow"><span>Up</span><span class="sval" id="s-up">—</span></div>
+      <div class="srow" style="margin-top:4px;font-size:9px">
+        <span style="word-break:break-all" id="s-url">ws://...:81</span>
+      </div>
+    </div>
+
+  </div><!-- /sidebar -->
+
+  <!-- TERMINAL -->
+  <div class="tpane">
+    <div id="xt"></div>
+    <div class="inp-bar">
+      <span class="prompt">›</span>
+      <input id="lineinp" type="text" autocomplete="off" spellcheck="false"
+             placeholder="type command and press Enter (or click terminal above for raw input)">
+      <button class="send-btn" onclick="sendLine()">SEND ↵</button>
+      <label class="asc-lbl">
+        <input type="checkbox" id="asc" checked> scroll
+      </label>
+    </div>
+  </div>
+
+</div><!-- /workspace -->
+
+<script>
+(function(){
+'use strict';
+
+/* ═══ xterm init ════════════════════════════════════════ */
+var term = new Terminal({
+  fontFamily:"'IBM Plex Mono','Cascadia Code','Fira Code',monospace",
+  fontSize:13, lineHeight:1.45,
+  cursorBlink:true, cursorStyle:'block',
+  scrollback:10000,
+  convertEol:false,       // pass raw bytes — ESP32 sends its own line endings
+  allowTransparency:false,
+  theme:{
+    background:'#0d1117', foreground:'#c9d1d9',
+    cursor:'#58a6ff', cursorAccent:'#0d1117',
+    selectionBackground:'rgba(88,166,255,0.25)',
+    black:'#161b22', brightBlack:'#484f58',
+    red:'#f85149',   brightRed:'#ff7b72',
+    green:'#3fb950', brightGreen:'#56d364',
+    yellow:'#d29922',brightYellow:'#e3b341',
+    blue:'#58a6ff',  brightBlue:'#79c0ff',
+    magenta:'#bc8cff',brightMagenta:'#d2a8ff',
+    cyan:'#39c5cf',  brightCyan:'#56d4dd',
+    white:'#b1bac4', brightWhite:'#f0f6fc',
+  }
+});
+
+var fitAddon = new FitAddon.FitAddon();
+term.loadAddon(fitAddon);
+term.open(document.getElementById('xt'));
+
+function fit(){ try{ fitAddon.fit(); }catch(e){} }
+fit();
+window.addEventListener('resize', fit);
+
+/* ═══ State ═════════════════════════════════════════════ */
+var ws=null, wsTimer=null, reconnectPaused=false;
+var rxB=0, txB=0, t0=Date.now();
+var logChunks=[];
+var cmdHist=[], histIdx=-1;
+var asc=true;
+
+document.getElementById('asc').onchange=function(){ asc=this.checked; };
+
+/* uptime */
+setInterval(function(){
+  var s=Math.floor((Date.now()-t0)/1000);
+  var h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;
+  document.getElementById('s-up').textContent=(h?h+'h ':'')+( m?m+'m ':'')+sec+'s';
+},1000);
+
+function fmtB(n){
+  return n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' kB':(n/1048576).toFixed(2)+' MB';
+}
+
+/* ═══ Status dot ════════════════════════════════════════ */
+function setStatus(state,msg){
+  document.getElementById('dot').className='dot '+state;
+  var lbl=document.getElementById('conn-label');
+  lbl.textContent=msg;
+  lbl.style.color=state==='ok'?'var(--ac2)':state==='err'?'var(--err)':'var(--warn)';
+}
+
+/* ═══ WebSocket ═════════════════════════════════════════ */
+var IP=location.hostname;
+var WS_URL='ws://'+IP+':81';
+document.getElementById('s-url').textContent=WS_URL;
+
+function wsConnect(){
+  if(ws){ try{ws.close();}catch(e){} ws=null; }
+  clearTimeout(wsTimer);
+  if(reconnectPaused) return;
+  setStatus('warn','connecting…');
+
+  try{ ws=new WebSocket(WS_URL); }
+  catch(e){
+    setStatus('err','WS unsupported');
+    return;
+  }
+  ws.binaryType='arraybuffer';
+
+  ws.onopen=function(){
+    setStatus('ok','connected');
+    t0=Date.now();
+    fit();
+    focusTerm();
+    term.writeln('\x1b[2m\x1b[32m── connected ──\x1b[0m');
+  };
+
+  ws.onmessage=function(ev){
+    var data;
+    if(ev.data instanceof ArrayBuffer){
+      // binary — decode as latin-1 to keep 8-bit bytes intact
+      var u=new Uint8Array(ev.data); data='';
+      for(var i=0;i<u.length;i++) data+=String.fromCharCode(u[i]);
+    } else {
+      data=ev.data;
+    }
+    rxB+=data.length;
+    document.getElementById('s-rx').textContent=fmtB(rxB);
+    logChunks.push(data);
+    term.write(data);
+    if(asc) term.scrollToBottom();
+  };
+
+  ws.onclose=function(){
+    ws=null;
+    if(!reconnectPaused){
+      setStatus('err','disconnected');
+      term.writeln('\r\n\x1b[2m\x1b[31m── disconnected – retry in 3s ──\x1b[0m\r\n');
+      wsTimer=setTimeout(wsConnect,3000);
+    }
+  };
+
+  ws.onerror=function(){ if(ws) ws.close(); };
+}
+
+/* ── IMPORTANT: do NOT kill WS on visibility change ── */
+/* Browser pauses JS when tab is hidden, WS stays alive on server */
+/* Only reconnect if we detect actual disconnect via onclose */
+document.addEventListener('visibilitychange',function(){
+  if(!document.hidden){
+    // Came back — if WS is dead, reconnect
+    if(!ws || ws.readyState!==WebSocket.OPEN){
+      wsConnect();
+    }
+    fit();
+    focusTerm();
+  }
+});
+
+window.addEventListener('beforeunload',function(){
+  reconnectPaused=true;
+  clearTimeout(wsTimer);
+  if(ws){ ws.onclose=null; ws.close(); }
+});
+
+/* ═══ Focus management ══════════════════════════════════ */
+function focusTerm(){
+  // xterm needs explicit focus to capture keystrokes
+  term.focus();
+}
+
+// Click on terminal → focus
+document.getElementById('xt').addEventListener('click', function(){
+  term.focus();
+});
+
+// Click on input bar → focus input (not terminal)
+document.getElementById('lineinp').addEventListener('focus', function(){
+  term.blur();
+});
+
+// Default: focus the terminal on load
+window.addEventListener('load', function(){
+  setTimeout(function(){ fit(); focusTerm(); }, 100);
+});
+
+/* ═══ xterm keyboard → WS (raw mode) ═══════════════════ */
+term.onData(function(data){
+  wsSend(data);
+});
+
+/* ═══ Line input bar ════════════════════════════════════ */
+var lineinp=document.getElementById('lineinp');
+
+lineinp.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){
+    e.preventDefault();
+    sendLine();
+  } else if(e.key==='ArrowUp'){
+    e.preventDefault();
+    if(histIdx<cmdHist.length-1){ histIdx++; lineinp.value=cmdHist[histIdx]; }
+  } else if(e.key==='ArrowDown'){
+    e.preventDefault();
+    if(histIdx>0){ histIdx--; lineinp.value=cmdHist[histIdx]; }
+    else{ histIdx=-1; lineinp.value=''; }
+  } else if(e.key==='Escape'){
+    lineinp.value=''; histIdx=-1; focusTerm();
+  }
+});
+
+window.sendLine=function(){
+  var v=lineinp.value;
+  if(!v) return;
+  cmdHist.unshift(v);
+  if(cmdHist.length>100) cmdHist.pop();
+  histIdx=-1;
+  wsSend(v+'\r\n');
+  lineinp.value='';
+};
+
+/* ═══ Send ══════════════════════════════════════════════ */
+function wsSend(data){
+  if(!ws||ws.readyState!==WebSocket.OPEN){
+    term.writeln('\r\n\x1b[33m[not connected]\x1b[0m');
+    return false;
+  }
+  try{
+    ws.send(data);
+    txB+=data.length;
+    document.getElementById('s-tx').textContent=fmtB(txB);
+    return true;
+  }catch(e){
+    term.writeln('\r\n\x1b[31m[send error: '+e+']\x1b[0m');
+    return false;
+  }
+}
+
+window.sc=function(cmd){ wsSend(cmd); };
+
+/* ═══ Clear ═════════════════════════════════════════════ */
+window.clearTerm=function(){
+  term.clear();
+  term.reset();   // reset scroll buffer too
+  logChunks=[];
+  // After clear, immediately re-focus so it stays active
+  setTimeout(focusTerm, 50);
+};
+
+/* ═══ Download ══════════════════════════════════════════ */
+window.dlLog=function(){
+  var b=new Blob([logChunks.join('')],{type:'text/plain'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(b);
+  a.download='console_'+new Date().toISOString().slice(0,19).replace(/:/g,'-')+'.txt';
+  a.click();
+};
+
+/* ═══ Reset ═════════════════════════════════════════════ */
+window.doReset=function(){
+  var btn=document.getElementById('rst-btn');
+  btn.disabled=true;
+  btn.innerHTML='<span class="ico">…</span> Sending';
+
+  fetch('/reset',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'type=normal'
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d.ok){
+      term.writeln('\r\n\x1b[32m[↺ reset sent – reconnecting in 4s]\x1b[0m');
+    } else {
+      term.writeln('\r\n\x1b[31m[reset failed: '+(d.error||'?')+']\x1b[0m');
+    }
+  })
+  .catch(function(){
+    // Board dropped the HTTP connection — normal on reset
+    term.writeln('\r\n\x1b[32m[↺ reset sent – reconnecting in 4s]\x1b[0m');
+  })
+  .finally(function(){
+    btn.disabled=false;
+    btn.innerHTML='<span class="ico">↺</span> Hardware Reset';
+    // Disconnect WS now; reconnect after board has had time to boot
+    reconnectPaused=true;
+    clearTimeout(wsTimer);
+    if(ws){ try{ws.onclose=null; ws.close();}catch(e){} ws=null; }
+    setStatus('warn','waiting for reboot…');
+    wsTimer=setTimeout(function(){
+      reconnectPaused=false;
+      wsConnect();
+    }, 4000);
+  });
+};
+
+/* ═══ Baud ══════════════════════════════════════════════ */
+window.setBaud=function(v){
+  var msg=document.getElementById('bmsg');
+  msg.textContent='saving…'; msg.style.color='var(--mute)';
+  fetch('/baud',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'dbg='+encodeURIComponent(v)
+  })
+  .then(function(r){ return r.json(); })
+  .then(function(d){
+    if(d.ok){
+      term.writeln('\r\n\x1b[36m[baud → '+v+']\x1b[0m');
+      msg.textContent='✓ saved'; msg.style.color='var(--ac2)';
+    } else {
+      term.writeln('\r\n\x1b[31m[baud error: '+(d.error||'?')+']\x1b[0m');
+      msg.textContent='failed'; msg.style.color='var(--err)';
+    }
+    setTimeout(function(){ msg.textContent=''; },2500);
+  })
+  .catch(function(){
+    msg.textContent='failed'; msg.style.color='var(--err)';
+    setTimeout(function(){ msg.textContent=''; },2500);
+  });
+};
+
+/* ═══ Boot ══════════════════════════════════════════════ */
+term.writeln('\x1b[1m\x1b[36mESP32 Serial Bridge\x1b[0m  \x1b[2m'+WS_URL+'\x1b[0m');
+term.writeln('\x1b[2mClick terminal for raw input · use bar below for line input\x1b[0m\r\n');
+
+// Sync baud dropdown with device current config
+fetch('/api/status').then(function(r){ return r.json(); }).then(function(d){
+  if(d.baud && d.baud.dbg){
+    var sel=document.getElementById('baudsel');
+    // Select matching option, or add it if not in list
+    var found=false;
+    for(var i=0;i<sel.options.length;i++){
+      if(parseInt(sel.options[i].value)===d.baud.dbg){ sel.selectedIndex=i; found=true; break; }
+    }
+    if(!found){
+      var o=document.createElement('option');
+      o.value=d.baud.dbg; o.textContent=d.baud.dbg;
+      sel.appendChild(o); sel.value=d.baud.dbg;
+    }
+  }
+}).catch(function(){});
+
+wsConnect();
+
+})();
+</script>
+</body>
+</html>

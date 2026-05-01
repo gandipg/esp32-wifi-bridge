@@ -1,0 +1,101 @@
+<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Status · ESP32</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@700;800&display=swap');
+:root{--bg:#080b10;--panel:#0d1117;--border:#1c2333;--b2:#243044;
+--ac:#00d4ff;--ac2:#00ff9d;--warn:#ffb800;--err:#ff4566;
+--txt:#cdd9e5;--mute:#4a5568;--inp:#111827}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--txt);font-family:'JetBrains Mono',monospace;font-size:13px}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:9999;
+background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.06) 2px,rgba(0,0,0,.06) 4px)}
+nav{background:var(--panel);padding:10px 16px;display:flex;align-items:center;
+gap:4px;flex-wrap:wrap;border-bottom:1px solid var(--border)}
+.logo{font-family:'Syne',sans-serif;font-weight:800;font-size:14px;
+color:var(--ac);letter-spacing:.08em;margin-right:12px}
+.logo span{color:var(--ac2)}
+nav a{color:var(--mute);text-decoration:none;font-size:11px;
+padding:5px 12px;border-radius:4px;transition:all .15s}
+nav a:hover{color:var(--txt);background:var(--border)}
+nav a.on{color:var(--ac);border-bottom:2px solid var(--ac)}
+.pg{padding:16px;max-width:720px;margin:0 auto}
+h2{font-family:'Syne',sans-serif;font-size:15px;color:var(--ac);margin-bottom:14px;letter-spacing:.06em}
+h3{font-size:10px;color:var(--mute);margin:16px 0 8px;text-transform:uppercase;letter-spacing:.12em;font-weight:700}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border:none}
+.lbl{color:var(--mute)}.val{color:var(--txt)}
+.ok{color:var(--ac2)}.no{color:var(--mute)}
+code{font-size:11px;color:var(--ac);background:rgba(0,212,255,.08);
+border:1px solid rgba(0,212,255,.15);border-radius:4px;padding:2px 7px}
+pre{background:var(--bg);border:1px solid var(--border);border-radius:6px;
+padding:12px;font-size:11px;color:var(--ac);overflow-x:auto;line-height:1.7}
+.pin{display:inline-block;font-size:10px;background:rgba(0,212,255,.08);
+border:1px solid rgba(0,212,255,.2);border-radius:4px;padding:1px 6px;
+color:var(--ac);font-family:'JetBrains Mono',monospace;margin-left:4px}
+.spin{color:var(--mute);font-size:11px;padding:20px 0;text-align:center}
+</style>
+</head><body>
+<nav>
+  <div class="logo">ESP<span>32</span></div>
+  <a href="/status.html" class="on">Status</a>
+  <a href="/config.html">Config</a>
+  <a href="/terminal.html">Terminal</a>
+</nav>
+<div class="pg">
+  <div id="net" class="spin">loading...</div>
+
+  <div class="card">
+    <h3>Pin Configuration</h3>
+    <div class="row">
+      <span class="lbl">UART RX</span>
+      <span class="val"><span class="pin">GPIO 14</span></span>
+    </div>
+    <div class="row">
+      <span class="lbl">UART TX</span>
+      <span class="val"><span class="pin">GPIO 27</span></span>
+    </div>
+    <div class="row">
+      <span class="lbl">RESET (RST)</span>
+      <span class="val"><span class="pin">GPIO 26</span></span>
+    </div>
+    <div class="row">
+      <span class="lbl">BOOT / FLASH (GPIO0)</span>
+      <span class="val"><span class="pin">GPIO 25</span></span>
+    </div>
+  </div>
+
+  <div id="usage" class="card" style="display:none">
+    <h3>Usage</h3>
+    <pre id="usage-pre"></pre>
+  </div>
+</div>
+<script>
+fetch('/api/status').then(function(r){return r.json();}).then(function(d){
+  var ip=d.ip||'?';
+  document.getElementById('net').innerHTML=
+    '<div class="card"><h2>UART Proxy</h2>'
+    +'<div class="row"><span class="lbl">WiFi IP</span>'
+    +'<span class="val '+(d.wifi?'ok':'no')+'">'+(d.wifi?ip:'not connected')+'</span></div>'
+    +'<div class="row"><span class="lbl">SSID</span><span class="val">'+(d.ssid||'–')+'</span></div>'
+    +'<div class="row"><span class="lbl">AP</span><span class="val">'
+    +(d.ap?'<span class="ok">192.168.4.1 (ESP32-Setup)</span>':'<span class="no">off</span>')
+    +'</span></div>'
+    +'<div class="row"><span class="lbl">Flash / AVR</span><code>'+ip+':2222</code></div>'
+    +'<div class="row"><span class="lbl">Telnet debug</span><code>'+ip+':23</code></div>'
+    +'<div class="row"><span class="lbl">TCP config</span><code>'+ip+':2223</code></div>'
+    +'</div>';
+  document.getElementById('usage-pre').textContent=
+    '# ESP flash\nesptool --port socket://'+ip+':2222 write_flash 0x0 fw.bin\n\n'
+    +'# AVR flash (Uno/Nano)\navrdude -c arduino -p atmega328p \\\n'
+    +'  -P net:'+ip+':2222 -b 115200 -U flash:w:fw.hex\n\n'
+    +'# Debug serial\ntelnet '+ip+'    nc '+ip+' 23\n\n'
+    +'# TCP config commands\nnc '+ip+' 2223';
+  document.getElementById('usage').style.display='';
+}).catch(function(){
+  document.getElementById('net').textContent='Device offline';
+});
+</script>
+</body></html>
