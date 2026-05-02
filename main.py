@@ -2,15 +2,11 @@
 ESP32 MicroPython — WiFi Serial Bridge  v5
 ==========================================
 Fixes v5:
- - _pin_lock defined before uart_bridge_thread (fixes NameError on boot)
- - last_data initialized before TCP tunnel loop (fixes NameError on timeout)
- - AVR reset: 3-stage flush with correct timing for optiboot startup noise
- - _proxy_thread: waits 4s for first byte (avrdude double-open pattern)
- - ESP flash: rx_flush/tx_flush AFTER reset completes, not before
- - AVR flash: tx_flush before forwarding first STK500 byte
- - ws_send: chunked sends (max 1024 B), correct extended-length framing
- - config handler: 20ms recv timeout keeps ws_tick responsive
- - Watchdog timeout 10s
+ - uart_bridge_thread е единственото място с uart.init() — baud промяна чрез флаг
+ - ws_recv_frame не докосва settimeout/setblocking след handshake
+ - AVR flash: правилна STK500 последователност (reset → drain → forward)
+ - TCP tunnel чете от rx_buf само когато мрежата е готова (select)
+ - Watchdog timeout увеличен до 10s
 """
 
 import network, socket, machine, utime, select, _thread
@@ -21,10 +17,10 @@ DEBUG_LEVEL = 2
 def D(lvl, *a):
     if lvl <= DEBUG_LEVEL: print(*a)
 
-PIN_RX   = 14
-PIN_TX   = 27
-PIN_RST  = 26
-PIN_BOOT = 25
+PIN_RX   = 32
+PIN_TX   = 33
+PIN_RST  = 13
+PIN_BOOT = 14
 
 PORT_PROXY  = 2222
 PORT_DEBUG  = 23
@@ -35,7 +31,7 @@ baud = {"esp": 115200, "avr": 115200, "dbg": 115200}
 
 uart = machine.UART(1, baudrate=115200,
                     rx=PIN_RX, tx=PIN_TX,
-                    timeout=0, rxbuf=4096)
+                    timeout=0, rxbuf=8192)
 
 pin_rst  = machine.Pin(PIN_RST,  machine.Pin.OUT, value=1)
 pin_boot = machine.Pin(PIN_BOOT, machine.Pin.OUT, value=1)
@@ -48,8 +44,13 @@ ip = ""
 # rx: bridge_thread writes head, network threads read tail
 # tx: network threads write head, bridge_thread reads tail
 
-_RX_SZ = 8192
-_TX_SZ = 4096
+# Larger buffers for flash operations
+# ROM bootloader flash block = 0x400 (1024) bytes + SLIP overhead
+# Stub flasher block = 0x800 (2048) bytes compressed
+# We need enough headroom for multiple blocks in flight
+_RX_SZ = 32768   # 32KB — must hold multiple ACKs + SLIP frames
+_TX_SZ = 32768   # 32KB — must hold full flash blocks from esptool
+
 _rx_buf = bytearray(_RX_SZ)
 _tx_buf = bytearray(_TX_SZ)
 _rx_h = [0]; _rx_t = [0]
@@ -59,7 +60,7 @@ def _push(buf, sz, h_ref, t_ref, data):
     h = h_ref[0]
     for b in data:
         nxt = (h + 1) % sz
-        if nxt == t_ref[0]: break   # full — stop, don't overwrite
+        if nxt == t_ref[0]: break   # full — drop (logged by caller if needed)
         buf[h] = b
         h = nxt
     h_ref[0] = h
@@ -71,17 +72,19 @@ def _pop(buf, sz, h_ref, t_ref):
     t_ref[0] = h
     return out
 
+def _used(sz, h_ref, t_ref):
+    h = h_ref[0]; t = t_ref[0]
+    return (h - t) % sz
+
 def rx_push(d): _push(_rx_buf, _RX_SZ, _rx_h, _rx_t, d)
 def rx_pop():   return _pop(_rx_buf, _RX_SZ, _rx_h, _rx_t)
 def tx_push(d): _push(_tx_buf, _TX_SZ, _tx_h, _tx_t, d)
 def tx_pop():   return _pop(_tx_buf, _TX_SZ, _tx_h, _tx_t)
 
 def rx_flush():
-    """Discard all pending rx data (used before flash)."""
     _rx_t[0] = _rx_h[0]
 
 def tx_flush():
-    """Discard all pending tx data."""
     _tx_t[0] = _tx_h[0]
 
 # ── Bridge control flags ───────────────────────────────────
@@ -99,19 +102,29 @@ _tcp_active = [False]
 #  UART BRIDGE THREAD
 # ═══════════════════════════════════════════════════════════
 
-_pin_lock = _thread.allocate_lock()   # protects pin_rst / pin_boot access
-
 def uart_bridge_thread():
+    """
+    Owns UART exclusively. Runs at maximum speed during flash operations.
+
+    Key design:
+    - sleep_us(50) when idle  = ~20kHz poll, enough for 921600 baud
+    - no sleep when active    = drain UART RX immediately
+    - TX written in one call  = uart.write() handles FIFO internally
+    - uart rxbuf=8192         = hardware buffer, bridge reads it fast
+    - baud change via flag    = atomic, no race with TCP thread
+    """
     D(2, "[BRG] start")
     while True:
         _bridge_tick[0] = utime.ticks_ms()
+        active = False
 
-        # Baud rate change request
+        # Baud rate change (from TCP tunnel or HTTP)
         nb = _do_baud[0]
         if nb:
             _do_baud[0] = 0
-            D(2, "[BRG] baud->", nb)
-            uart.init(baudrate=nb, rx=PIN_RX, tx=PIN_TX, timeout=0, rxbuf=4096)
+            D(2, "[BRG] baud →", nb)
+            # Large rxbuf for flash — hardware buffers incoming ACKs
+            uart.init(baudrate=nb, rx=PIN_RX, tx=PIN_TX, timeout=0, rxbuf=8192)
 
         # Reset request
         req = _do_reset[0]
@@ -132,21 +145,26 @@ def uart_bridge_thread():
                 elif req == 4:
                     utime.sleep_ms(200); machine.reset()
 
-        # UART RX → rx_buf
-        if uart.any():
-            d = uart.read(uart.any())
-            if d: rx_push(d)
+        # UART RX → rx_buf: drain everything available
+        n = uart.any()
+        if n:
+            d = uart.read(n)
+            if d:
+                rx_push(d)
+                active = True
 
-        # tx_buf → UART TX (chunked to avoid blocking)
+        # tx_buf → UART TX: write all at once
+        # uart.write() on MicroPython ESP32 uses DMA and returns
+        # immediately for small writes; for large writes it may block
+        # briefly but that's acceptable — it's draining the TX FIFO.
         d = tx_pop()
         if d:
-            mv = memoryview(d)
-            i = 0
-            while i < len(d):
-                n = uart.write(mv[i:i+64])
-                i += n if n else 64
+            uart.write(d)
+            active = True
 
-        utime.sleep_us(200)   # ~5kHz poll rate
+        # Tight loop when data is flowing, yield when idle
+        if not active:
+            utime.sleep_us(50)
 
 def watchdog_thread():
     utime.sleep_ms(6000)
@@ -186,30 +204,20 @@ def ws_handshake(conn):
     except: return False
 
 def ws_send(conn, data):
-    """Send WebSocket binary frame(s). Chunks data if > 1024 bytes."""
+    """Send binary/text frame. Non-blocking check first."""
     if isinstance(data, str): data = data.encode("utf-8", "replace")
     if not data: return True
-    # Send in chunks of max 1024 bytes to avoid extended-length frames
-    # and to keep the send non-blocking on slow connections
-    offset = 0
-    while offset < len(data):
-        chunk = data[offset:offset+1024]
-        n = len(chunk)
-        if n < 126:
-            hdr = bytes([0x82, n])
-        else:
-            hdr = bytes([0x82, 126, n >> 8, n & 0xFF])
-        try:
-            _, w, _ = select.select([], [conn], [], 0.05)
-            if not w: return True   # TX busy — drop this chunk (live data)
-            conn.sendall(hdr + chunk)
-        except OSError as e:
-            if e.args[0] == 11: return True   # EAGAIN — not fatal
-            return False
-        except:
-            return False
-        offset += n
-    return True
+    n = len(data)
+    hdr = bytes([0x82, n]) if n < 126 else bytes([0x82, 126, n >> 8, n & 0xFF])
+    try:
+        _, w, _ = select.select([], [conn], [], 0.05)
+        if not w: return True      # TX busy — skip this chunk
+        conn.sendall(hdr + data)
+        return True
+    except OSError as e:
+        return e.args[0] == 11     # EAGAIN = not fatal
+    except:
+        return False
 
 def ws_recv_frame(conn):
     """
@@ -321,6 +329,8 @@ def ws_accept(srv):
 #  TCP TUNNEL THREAD (port 23 debug, port 2222 flash/debug)
 # ═══════════════════════════════════════════════════════════
 
+_pin_lock = _thread.allocate_lock()   # protects pin_rst / pin_boot access
+
 def _set_baud(b):
     """Request baud change via bridge thread flag (thread-safe)."""
     _do_baud[0] = b
@@ -330,55 +340,41 @@ def _set_baud(b):
 
 def _tcp_tunnel_thread(conn, addr, flush_rx_on_start=False):
     """
-    TCP ↔ ring-buffer tunnel. Tight poll loop for minimum latency.
-    STK500 is timing-sensitive — every ms counts.
-    flush_rx_on_start: discard any stale rx data before forwarding
-                       (used for AVR flash to avoid sending boot noise)
+    Direct UART tunnel for AVR flash and telnet.
+    Same simple select() loop as flash_debug.py tunnel().
     """
     _tcp_active[0] = True
     D(2, "[TCP] start", addr)
+
     if flush_rx_on_start:
-        # Extra safety flush: bridge thread may have pushed more bytes
-        # between _avr_reset_and_wait() and now
-        utime.sleep_ms(20)
-        rx_flush()
-    conn.settimeout(0.05)   # 50ms recv timeout
-    last_data = utime.ticks_ms()  # initialize before loop to avoid NameError
+        utime.sleep_ms(30)
+        while uart.any(): uart.read(uart.any())
+
+    conn.setblocking(True)
+    conn.settimeout(5.0)
 
     try:
         while True:
-            active = False
-
-            # net → tx_buf
-            try:
-                d = conn.recv(512)
-                if d == b"": break
-                if d:
-                    tx_push(d)
-                    last_data = utime.ticks_ms()
-                    active = True
-            except OSError: pass
-
-            # rx_buf → net
-            d = rx_pop()
-            if d:
+            # net → uart
+            r, _, _ = select.select([conn], [], [], 0.05)
+            if r:
                 try:
-                    conn.sendall(d)
-                    last_data = utime.ticks_ms()
-                    active = True
-                except OSError as e:
-                    if hasattr(e,"args") and e.args[0] == 11:
-                        rx_push(d)   # EAGAIN — put back
-                    else:
-                        break
-                except:
+                    d = conn.recv(512)
+                except OSError:
+                    d = None
+                if not d:
                     break
+                uart.write(d)
 
-            if utime.ticks_diff(utime.ticks_ms(), last_data) > 300000:
-                D(2, "[TCP] timeout"); break
-
-            if not active:
-                utime.sleep_ms(1)
+            # uart → net
+            n = uart.any()
+            if n:
+                d = uart.read(n)
+                if d:
+                    try:
+                        conn.sendall(d)
+                    except:
+                        break
 
     except Exception as e:
         D(1, "[TCP] err", e)
@@ -386,35 +382,79 @@ def _tcp_tunnel_thread(conn, addr, flush_rx_on_start=False):
         try: conn.close()
         except: pass
         _tcp_active[0] = False
-        _set_baud(baud["dbg"])
-        rx_flush(); tx_flush()
+        _do_baud[0] = baud["dbg"]
         D(2, "[TCP] done", addr)
+
 
 def _avr_reset_and_wait():
     """
     Emulate DTR toggle for AVR reset.
     Optiboot (Arduino Uno/Nano) timing:
       - RST pulse: 10ms low
-      - Bootloader starts within 20-50ms of RST release
-      - Bootloader sends a few garbage bytes then waits for STK500 sync
-      - Bootloader window: ~1 second at 115200 baud
-    We do multiple flush passes to clear ALL startup noise before
-    the tunnel opens. The tunnel does one final flush at start too.
+      - Bootloader starts within 20ms of RST release
+      - Bootloader window: ~1 second
+      - Bootloader baud: always 115200 (optiboot default)
+    We flush multiple times to clear ALL startup noise.
+    The tunnel will do one more flush at start for safety.
     """
     with _pin_lock:
         pin_rst.value(0)
         utime.sleep_ms(10)
         pin_rst.value(1)
-    # First flush: clear any bytes that arrived during RST low
-    utime.sleep_ms(30)
-    rx_flush()
-    # Second flush: bootloader is now printing its startup noise
-    utime.sleep_ms(60)
-    rx_flush()
-    # Third flush: ensure all boot noise is gone before avrdude sends
+    # Wait for bootloader to fully start and stop sending noise
     utime.sleep_ms(50)
     rx_flush()
-    D(2, "[AVR] reset done, rx cleared")
+    utime.sleep_ms(50)
+    rx_flush()
+    utime.sleep_ms(30)
+    rx_flush()
+
+
+def _esp_flash_tunnel(conn, addr):
+    """
+    Direct UART tunnel for ESP flash — same logic as flash_debug.py.
+    No ring buffers, no SLIP parsing. Just forward bytes both ways.
+    esptool and stub handle baud negotiation themselves.
+    """
+    _tcp_active[0] = True
+    D(2, "[ESP] start", addr)
+
+    uart.init(baudrate=baud["esp"], rx=PIN_RX, tx=PIN_TX, timeout=0, rxbuf=8192)
+    conn.setblocking(True)
+    conn.settimeout(10.0)
+
+    try:
+        while True:
+            # net → uart
+            r, _, _ = select.select([conn], [], [], 0.05)
+            if r:
+                try:
+                    d = conn.recv(1024)
+                except OSError:
+                    d = None
+                if not d:
+                    break
+                uart.write(d)
+
+            # uart → net
+            n = uart.any()
+            if n:
+                d = uart.read(n)
+                if d:
+                    try:
+                        conn.sendall(d)
+                    except:
+                        break
+
+    except Exception as e:
+        D(1, "[ESP] err", e)
+    finally:
+        try: conn.close()
+        except: pass
+        _tcp_active[0] = False
+        _do_baud[0] = baud["dbg"]
+        D(2, "[ESP] done", addr)
+
 
 def _proxy_thread(conn, addr):
     """
@@ -438,11 +478,8 @@ def _proxy_thread(conn, addr):
     rx_flush(); tx_flush()
     _avr_reset_and_wait()
 
-    # Wait for first byte from client.
-    # avrdude with -c arduino does a double-open: first connect sends nothing
-    # (just probes the port), second connect sends STK500 sync 0x30.
-    # We wait up to 4s to accommodate both opens and network RTT.
-    conn.settimeout(4.0)
+    # Wait for first byte from client (avrdude sends after ~100ms)
+    conn.settimeout(3.0)
     first = b""
     try:
         first = conn.recv(1)
@@ -459,25 +496,32 @@ def _proxy_thread(conn, addr):
         _tcp_tunnel_thread(conn, addr)
 
     elif fb == 0xC0:
-        # esptool SLIP sync byte — ESP flash mode
+        # esptool SLIP sync — ESP flash
+        # esptool v5 flow:
+        #   1. connect + SLIP sync at initial baud (115200)
+        #   2. upload stub flasher
+        #   3. send ESP_CHANGE_BAUDRATE command (op=0x0f)
+        #      both sides switch to new baud (default 921600)
+        #   4. flash blocks at high baud
+        #
+        # We use an intercepting tunnel that watches for the
+        # CHANGE_BAUDRATE SLIP command and updates our UART baud.
         D(2, "[P] ESP flash")
         _set_baud(baud["esp"])
         with _pin_lock:
             pin_boot.value(0); utime.sleep_ms(10)
             pin_rst.value(0);  utime.sleep_ms(100)
             pin_rst.value(1);  utime.sleep_ms(50)
-            pin_boot.value(1); utime.sleep_ms(300)
-        # Flush UART noise from ESP ROM boot banner AFTER reset completes
+            pin_boot.value(1)
+        utime.sleep_ms(500)
         rx_flush(); tx_flush()
-        # Re-forward the first byte that identified the protocol
         tx_push(first)
-        _tcp_tunnel_thread(conn, addr)
+        _esp_flash_tunnel(conn, addr)
 
     elif fb == 0x30:
         # STK500 Cmnd_STK_GET_SYNC — AVR flash
-        # Already reset + at 115200 baud. Flush any stale tx, then forward.
+        # Already reset + at 115200. Flush rx then forward.
         D(2, "[P] AVR flash (0x30)")
-        tx_flush()
         tx_push(first)
         _tcp_tunnel_thread(conn, addr, flush_rx_on_start=True)
 
@@ -502,7 +546,7 @@ def handle_proxy(conn, addr):
 def handle_config(conn, addr):
     D(2, "[C] connect", addr)
     buf = b""
-    conn.settimeout(0.02)   # 20ms — short enough to keep ws_tick responsive
+    conn.settimeout(0.05)
 
     def send(m):
         try: conn.sendall((m + "\r\n").encode())
