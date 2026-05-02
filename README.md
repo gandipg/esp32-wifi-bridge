@@ -13,10 +13,10 @@ Inspired by [esp-link](https://github.com/jeelabs/esp-link), built entirely in M
 ![Status page](image/status.png)
 
 ### Config page
-![Config page](config.png)
+![Config page](image/config.png)
 
 ### Terminal (Console)
-![Terminal](terminal.png)
+![Terminal](image/terminal.png)
 
 ---
 
@@ -136,7 +136,7 @@ Config:    nc 192.168.1.100 2223
 
 ### Status — `http://<ip>/status.html`
 
-![Status page](status.png)
+![Status page](image/status.png)
 
 Shows the current state of the bridge:
 - WiFi IP and SSID
@@ -146,7 +146,7 @@ Shows the current state of the bridge:
 
 ### Config — `http://<ip>/config.html`
 
-![Config page](config.png)
+![Config page](image/config.png)
 
 - **Hardware Reset** — pulses RST pin, reboots the connected target device
 - **Baud Rates** — set ESP flash, AVR flash and debug baud rates independently, then save
@@ -155,7 +155,7 @@ Shows the current state of the bridge:
 
 ### Terminal — `http://<ip>/terminal.html`
 
-![Terminal](terminal.png)
+![Terminal](image/terminal.png)
 
 Live serial console in the browser over WebSocket.
 
