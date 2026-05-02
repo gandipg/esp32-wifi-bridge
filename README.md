@@ -10,7 +10,7 @@ Inspired by [esp-link](https://github.com/jeelabs/esp-link), built entirely in M
 ## Screenshots
 
 ### Status page
-![Status page](status.png)
+![Status page](image/status.png)
 
 ### Config page
 ![Config page](config.png)
